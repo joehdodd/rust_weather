@@ -57,11 +57,11 @@ struct WeatherQuery {
 }
 
 async fn get_weather(location: Query<WeatherQuery>) -> Json<WeatherData> {
-    let location = location.0;
+    let location_query = location.0;
     let key = std::env::var("WEATHER_API_KEY").unwrap();
     let request_url = format!(
         "http://api.weatherstack.com/current?access_key={}&query={}",
-        key, location.location
+        key, location_query.location
     );
     let client = reqwest::Client::new();
     let res = client.get(&request_url).send().await.unwrap();

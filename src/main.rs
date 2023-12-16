@@ -1,6 +1,6 @@
-use axum::{routing::get, Json, Router};
-use serde::{Deserialize, Serialize};
+use axum::{extract::Query, routing::get, Json, Router};
 use dotenv::dotenv;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Request {
@@ -51,14 +51,20 @@ struct WeatherData {
     current: Current,
 }
 
-async fn get_weather() -> Json<WeatherData> {
+#[derive(Debug, Deserialize)]
+struct WeatherQuery {
+    location: String,
+}
+
+async fn get_weather(location: Query<WeatherQuery>) -> Json<WeatherData> {
+    let location = location.0;
     let key = std::env::var("WEATHER_API_KEY").unwrap();
-    let request_url = format!("http://api.weatherstack.com/current?access_key={}&query=New York", key);
+    let request_url = format!(
+        "http://api.weatherstack.com/current?access_key={}&query={}",
+        key, location.location
+    );
     let client = reqwest::Client::new();
-    let res = client.get(&request_url)
-        .send()
-        .await
-        .unwrap();
+    let res = client.get(&request_url).send().await.unwrap();
     let data: WeatherData = res.json().await.unwrap();
     Json(data)
 }

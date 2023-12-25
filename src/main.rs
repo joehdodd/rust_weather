@@ -1,6 +1,6 @@
 use axum::{
     error_handling::HandleError,
-    extract::{Path, Query, Request},
+    extract::{Query, Request},
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -67,71 +67,17 @@ async fn get_weather(location_query: Query<WeatherQuery>) -> Response<axum::body
     }
 }
 
-async fn get_planet(Path(planet_id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
-    let request_url = format!("https://swapi.dev/api/planets/{}", planet_id);
+async fn get_person(/*
+    Is it possible to extract the person_id here given my implemntation?
+     */) -> Result<Json<serde_json::Value>, reqwest::Error> {
+    let request_url = format!("https://swapi.dev/api/people/{}", "1asdf".to_owned());
     let response = reqwest::get(request_url).await?;
     if response.status().is_success() {
-        let res_json = response.json::<serde_json::Value>().await?;
-        Ok(Json(serde_json::json!({
-            "data": res_json,
-            "success": true
-        })))
+        let json = response.json::<serde_json::Value>().await?;
+        Ok(Json(json))
     } else {
-        let res_string = response.text().await?;
-        Err(AppError(anyhow::anyhow!("{}", res_string)))
+        Err(response.error_for_status().unwrap_err())
     }
-}
-
-async fn get_person(person_id: String) -> Result<Json<serde_json::Value>, reqwest::Error> {
-    let request_url = format!("https://swapi.dev/api/people/{}", person_id);
-    let response = reqwest::get(request_url)
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-    Ok(Json(response))
-}
-
-#[derive(Debug)]
-struct AppError(anyhow::Error);
-
-// Tell axum how to convert `AppError` into a response.
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        println!("Error: {:?}", self);
-        let body = Json(serde_json::json!({
-            "error": self.0.to_string(),
-        }));
-        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
-    }
-}
-
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self(err.into())
-    }
-}
-
-async fn can_fail() -> Result<String, reqwest::Error> {
-    // send a request to a site that doesn't exist
-    // so we can see the handler fail
-    let body = reqwest::get("https://swapi.dev/api/people/1asdf").await?;
-    if body.status().is_success() {
-        println!("Success!");
-        Ok(body.text().await?)
-    } else {
-        println!("Failure!");
-        Err(body.error_for_status().unwrap_err())
-    }
-}
-
-async fn handle_reqwest_error(err: reqwest::Error) -> (StatusCode, String) {
-    return (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Something went wrong: {}", err),
-    );
 }
 
 #[tokio::main]
@@ -143,14 +89,8 @@ async fn main() {
         .allow_methods([Method::GET])
         .allow_origin(Any);
 
-    let fallible_reqwest_service = tower::service_fn(|_req| async {
-        let body = can_fail().await?;
-        Ok::<_, reqwest::Error>(Response::new(body))
-    });
-
-    let faillible_person_service = tower::service_fn(|_req| async {
-        let person_id = "1asdf".to_owned();
-        let body = get_person(person_id).await?;
+    let faillible_person_service = tower::service_fn(|req: Request| async {
+        let body = get_person().await?;
         Ok::<_, reqwest::Error>(body.into_response())
     });
 
@@ -160,15 +100,27 @@ async fn main() {
             "/person/:person_id",
             HandleError::new(faillible_person_service, handle_reqwest_error),
         )
-        .route("/planets/:planet_id", get(get_planet))
-        .route_service(
-            "/this_will_fail",
-            HandleError::new(fallible_reqwest_service, handle_reqwest_error),
-        )
         .layer(cors)
         .with_state(client);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:1337")
         .await
         .unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn handle_reqwest_error(err: reqwest::Error) -> Response {
+    /*
+    
+     */
+    let status = err.status();
+    let status = status.unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+    let status_as_u16 = status.as_u16();
+    let axum_status =
+        StatusCode::from_u16(status_as_u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let res_json = Json(serde_json::json!({
+        "error": {
+            "message": format!("Something went wrong: {}", err),
+        },
+    }));
+    return (axum_status, res_json).into_response();
 }

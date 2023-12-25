@@ -1,5 +1,6 @@
 use axum::{
-    extract::{Path, Query},
+    error_handling::HandleError,
+    extract::{Path, Query, Request},
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -66,23 +67,28 @@ async fn get_weather(location_query: Query<WeatherQuery>) -> Response<axum::body
     }
 }
 
-async fn get_person(Path(person_id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
-    let request_url = format!("https://swapi.dev/api/people/{}", person_id);
+async fn get_planet(Path(planet_id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
+    let request_url = format!("https://swapi.dev/api/planets/{}", planet_id);
     let response = reqwest::get(request_url).await?;
-    Ok(Json(serde_json::json!({
-        "data": response.json::<serde_json::Value>().await?,
-        "success": true
-    })))
-    // if response.status().is_success() {
-    //     let res_json = response.json::<serde_json::Value>().await?;
-    //     Ok(Json(serde_json::json!({
-    //         "data": res_json,
-    //         "success": true
-    //     })))
-    // } else {
-    //     let res_string = response.text().await?;
-    //     Err(AppError(anyhow::anyhow!("{}", res_string)))
-    // }
+    if response.status().is_success() {
+        let res_json = response.json::<serde_json::Value>().await?;
+        Ok(Json(serde_json::json!({
+            "data": res_json,
+            "success": true
+        })))
+    } else {
+        let res_string = response.text().await?;
+        Err(AppError(anyhow::anyhow!("{}", res_string)))
+    }
+}
+
+async fn get_person(person_id: String) -> Result<Json<serde_json::Value>, reqwest::Error> {
+    let request_url = format!("https://swapi.dev/api/people/{}", person_id);
+    let response = reqwest::get(request_url)
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    Ok(Json(response))
 }
 
 #[derive(Debug)]
@@ -108,16 +114,57 @@ where
     }
 }
 
+async fn can_fail() -> Result<String, reqwest::Error> {
+    // send a request to a site that doesn't exist
+    // so we can see the handler fail
+    let body = reqwest::get("https://swapi.dev/api/people/1asdf").await?;
+    if body.status().is_success() {
+        println!("Success!");
+        Ok(body.text().await?)
+    } else {
+        println!("Failure!");
+        Err(body.error_for_status().unwrap_err())
+    }
+}
+
+async fn handle_reqwest_error(err: reqwest::Error) -> (StatusCode, String) {
+    return (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Something went wrong: {}", err),
+    );
+}
+
 #[tokio::main]
 async fn main() {
     dotenv().ok();
     let client = reqwest::Client::new();
+
     let cors = CorsLayer::new()
         .allow_methods([Method::GET])
         .allow_origin(Any);
+
+    let fallible_reqwest_service = tower::service_fn(|_req| async {
+        let body = can_fail().await?;
+        Ok::<_, reqwest::Error>(Response::new(body))
+    });
+
+    let faillible_person_service = tower::service_fn(|_req| async {
+        let person_id = "1asdf".to_owned();
+        let body = get_person(person_id).await?;
+        Ok::<_, reqwest::Error>(body.into_response())
+    });
+
     let app = Router::new()
         .route("/", get(get_weather))
-        .route("/person/:person_id", get(get_person))
+        .route_service(
+            "/person/:person_id",
+            HandleError::new(faillible_person_service, handle_reqwest_error),
+        )
+        .route("/planets/:planet_id", get(get_planet))
+        .route_service(
+            "/this_will_fail",
+            HandleError::new(fallible_reqwest_service, handle_reqwest_error),
+        )
         .layer(cors)
         .with_state(client);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:1337")

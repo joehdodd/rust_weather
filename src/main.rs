@@ -14,58 +14,75 @@ struct WeatherQuery {
     location: String,
 }
 
-async fn get_weather(
-    location_query: Query<WeatherQuery>,
-) -> Result<Json<serde_json::Value>, Json<serde_json::Value>> {
+async fn get_weather(location_query: Query<WeatherQuery>) -> Response<axum::body::Body> {
     let location_query = &location_query.location;
-    let key = std::env::var("WEATHER_STACK_API_KEY").unwrap();
+    let key = std::env::var("WEATHER_API_KEY").unwrap();
     let request_url = format!(
-        "http://api.weatherstack.com/current?access_key={}&query={}&units=f",
+        "http://api.weatherstack.com/curent?access_key={}&query={}&units=f",
         key, location_query
     );
     let res = reqwest::get(request_url).await;
-    println!("res: {:?}", res);
     match res {
         /*
          * serde_json allows us to 1) give the Value type to arbitraty JSON 2) use the json! macro to create arbitrary JSON
          */
         Ok(response) => {
+            let stat = response.headers();
+            println!("stat: {:?}", stat);
             let res_json = response.json::<serde_json::Value>().await;
+            // in most cases this will always return 200 because if the json is okay, reqwest returns a 200
             match res_json {
-                Ok(res) => Ok(Json(serde_json::json!({
-                    "data": res,
-                    "success": true
-                }))),
-                Err(_e) => Err(Json(serde_json::json!({
-                    "error": {
-                        "message": "Request to Weather Stack Failed!",
-                    },
-                    "success": false
-                }))),
+                Ok(res) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "data": res,
+                    })),
+                )
+                    .into_response(),
+                Err(e) => {
+                    let error_status = e.status();
+                    println!("error_status: {:?}", error_status);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": {
+                                "message": "Request to Weather Stack Failed!",
+                            },
+                        })),
+                    )
+                        .into_response()
+                }
             }
         }
-        Err(_e) => Err(Json(serde_json::json!({
-            "error": {
-                "message": "Internal Server Error. Request failed.",
-            },
-            "success": false
-        }))),
+        Err(_e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "Internal server error.",
+                },
+            })),
+        )
+            .into_response(),
     }
 }
 
 async fn get_person(Path(person_id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
     let request_url = format!("https://swapi.dev/api/people/{}", person_id);
     let response = reqwest::get(request_url).await?;
-    if response.status().is_success() {
-        let res_json = response.json::<serde_json::Value>().await?;
-        Ok(Json(serde_json::json!({
-            "data": res_json,
-            "success": true
-        })))
-    } else {
-        let res_string = response.text().await?;
-        Err(AppError(anyhow::anyhow!("{}", res_string)))
-    }
+    Ok(Json(serde_json::json!({
+        "data": response.json::<serde_json::Value>().await?,
+        "success": true
+    })))
+    // if response.status().is_success() {
+    //     let res_json = response.json::<serde_json::Value>().await?;
+    //     Ok(Json(serde_json::json!({
+    //         "data": res_json,
+    //         "success": true
+    //     })))
+    // } else {
+    //     let res_string = response.text().await?;
+    //     Err(AppError(anyhow::anyhow!("{}", res_string)))
+    // }
 }
 
 #[derive(Debug)]

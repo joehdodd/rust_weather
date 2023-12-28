@@ -4,14 +4,23 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
+    Router,
 };
 use dotenv::dotenv;
 use reqwest::Client;
 use tower_http::cors::{Any, CorsLayer};
 
-async fn proxy_via_reqwest(State(client): State<Client>) -> Response {
-    let request_url = format!("https://swapi.dev/api/people/{}", "1".to_owned());
+#[derive(serde::Deserialize, Debug)]
+struct WeatherRequest {
+    location: String,
+}
+
+async fn get_weather(location: Query<WeatherRequest>, State(client): State<Client>) -> Response {
+    let api_key = std::env::var("WEATHER_API_KEY").expect("API key not set!");
+    let request_url = format!(
+        "https://api.tomorrow.io/v4/weather/forecast?location={}&apikey={}",
+        location.location, api_key
+    );
     let reqwest_response = match client.get(request_url).send().await {
         Ok(res) => res,
         Err(err) => {
@@ -27,8 +36,7 @@ async fn proxy_via_reqwest(State(client): State<Client>) -> Response {
         (name, value)
     }));
 
-    let res_to_client = response_builder
-        .body(Body::from_stream(reqwest_response.bytes_stream()));
+    let res_to_client = response_builder.body(Body::from_stream(reqwest_response.bytes_stream()));
     match res_to_client {
         Ok(res) => res,
         Err(err) => {
@@ -47,7 +55,7 @@ async fn main() {
         .allow_origin(Any);
 
     let app = Router::new()
-        .route("/person", get(proxy_via_reqwest))
+        .route("/weather", get(get_weather))
         .layer(cors)
         .with_state(client);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:1337")
@@ -55,4 +63,3 @@ async fn main() {
         .unwrap();
     axum::serve(listener, app).await.unwrap();
 }
-
